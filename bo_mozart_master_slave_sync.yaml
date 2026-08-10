@@ -56,7 +56,10 @@ blueprint:
 
 variables:
   master_entity: !input master
-  slaves: !input slaves
+  slaves_raw: !input slaves
+  # Accepts either a single mapping (one slave, no leading "-") or a proper
+  # YAML list of mappings, so a one-slave entry typed without a dash still works.
+  slaves: "{{ [slaves_raw] if slaves_raw is mapping else (slaves_raw or []) }}"
   sync_standby: !input sync_standby
   sync_source: !input sync_source
   sync_volume: !input sync_volume
