@@ -1,0 +1,126 @@
+blueprint:
+  name: B&O Mozart Master/Slave Sync
+  description: >
+    Mirrors a Bang & Olufsen Mozart speaker's standby state, source and
+    volume to one or more other Mozart speakers. Pick one "master" and a
+    list of "slave" speakers; each slave can have its own volume offset
+    (a simple gain control) so it plays louder or quieter than the master
+    while still tracking it.
+
+    This works with any `media_player` entity from the `bang_olufsen`
+    integration (Mozart-platform devices), and does not use B&O's native
+    Beolink grouping - it's a plain Home Assistant sync, useful when you
+    want per-speaker offsets that Beolink doesn't support.
+  domain: automation
+  input:
+    master:
+      name: Master speaker
+      description: The B&O Mozart media_player that acts as the source of truth.
+      selector:
+        entity:
+          domain: media_player
+    slaves:
+      name: Slave speakers
+      description: >
+        List of speakers to follow the master. Each entry needs an
+        `entity` (media_player entity ID) and an optional `offset` in
+        percentage points (-100 to 100) added to the master's volume.
+
+        Example:
+
+        - entity: media_player.beosound_kitchen
+          offset: -10
+        - entity: media_player.beosound_bathroom
+          offset: 5
+        - entity: media_player.beosound_bedroom
+      default: []
+      selector:
+        object: {}
+    sync_standby:
+      name: Sync standby / power state
+      description: Turn slaves on/off together with the master.
+      default: true
+      selector:
+        boolean: {}
+    sync_source:
+      name: Sync source
+      description: Switch slaves to the master's source (skipped if a slave doesn't support that source).
+      default: true
+      selector:
+        boolean: {}
+    sync_volume:
+      name: Sync volume (with per-slave offset)
+      default: true
+      selector:
+        boolean: {}
+
+variables:
+  master_entity: !input master
+  slaves: !input slaves
+  sync_standby: !input sync_standby
+  sync_source: !input sync_source
+  sync_volume: !input sync_volume
+
+trigger:
+  - platform: state
+    entity_id: !input master
+
+action:
+  - repeat:
+      for_each: "{{ slaves }}"
+      sequence:
+        - variables:
+            slave_entity: "{{ repeat.item.entity }}"
+            offset: "{{ (repeat.item.offset | default(0)) / 100 }}"
+
+        # --- Standby / power ---
+        - if:
+            - condition: template
+              value_template: "{{ sync_standby }}"
+          then:
+            - if:
+                - condition: template
+                  value_template: "{{ states(master_entity) in ['off', 'standby'] }}"
+              then:
+                - action: media_player.turn_off
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ slave_entity }}"
+              else:
+                - action: media_player.turn_on
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ slave_entity }}"
+
+        # --- Source (only while master is on and slave supports the source) ---
+        - if:
+            - condition: template
+              value_template: >
+                {{ sync_source
+                   and states(master_entity) not in ['off', 'standby']
+                   and state_attr(master_entity, 'source') is not none
+                   and state_attr(master_entity, 'source') in (state_attr(slave_entity, 'source_list') or []) }}
+          then:
+            - action: media_player.select_source
+              continue_on_error: true
+              target:
+                entity_id: "{{ slave_entity }}"
+              data:
+                source: "{{ state_attr(master_entity, 'source') }}"
+
+        # --- Volume (with offset, clamped to 0-1) ---
+        - if:
+            - condition: template
+              value_template: >
+                {{ sync_volume and state_attr(master_entity, 'volume_level') is not none }}
+          then:
+            - action: media_player.volume_set
+              continue_on_error: true
+              target:
+                entity_id: "{{ slave_entity }}"
+              data:
+                volume_level: >
+                  {{ [[(state_attr(master_entity, 'volume_level') + offset) | round(2), 0] | max, 1] | min }}
+
+mode: restart
+max_exceeded: silent
